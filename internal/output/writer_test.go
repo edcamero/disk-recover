@@ -3,7 +3,10 @@ package output
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+
+	"github.com/edcamero/disk-recover/internal/blockdev"
 	"testing"
 )
 
@@ -233,5 +236,49 @@ func TestPlaceMovesWithoutOverwriting(t *testing.T) {
 	entries, _ := os.ReadDir(destDir)
 	if len(entries) != 3 {
 		t.Errorf("quedaron %d archivos en el destino, se esperaban 3", len(entries))
+	}
+}
+
+// TestNewSafeWriterAcceptsRawDevice es la regresion de un fallo reportado con
+// un USB real:
+//
+//	no se pudo acceder al origen: GetFileInformationByHandle \\.\D:: Incorrect function
+//
+// NewSafeWriter hacia os.Stat sobre la ruta de origen para comprobar que
+// existia. En Windows eso llama a GetFileInformationByHandle, que un manejador
+// de volumen en crudo no implementa. La comprobacion ademas era redundante: el
+// llamante ya tiene el dispositivo abierto cuando llega aqui.
+func TestNewSafeWriterAcceptsRawDevice(t *testing.T) {
+	var rawPath string
+	if runtime.GOOS == "windows" {
+		rawPath = `\\.\Z:` // unidad que casi con seguridad no existe
+	} else {
+		rawPath = "/dev/nonexistent-test-device"
+	}
+
+	if !blockdev.IsRawDevice(rawPath) {
+		t.Fatalf("%q deberia reconocerse como dispositivo en crudo", rawPath)
+	}
+
+	_, err := NewSafeWriter(t.TempDir(), rawPath)
+
+	// Puede fallar por otros motivos segun la plataforma, pero NUNCA por la
+	// comprobacion de existencia: esa es la que rompia con dispositivos reales.
+	if err != nil && strings.Contains(err.Error(), "no se pudo acceder al origen") {
+		t.Errorf("NewSafeWriter rechazo un dispositivo en crudo en la comprobacion de existencia: %v", err)
+	}
+}
+
+// TestNewSafeWriterStillRejectsMissingFile: saltarse la comprobacion para
+// dispositivos no debe saltarsela tambien para archivos.
+func TestNewSafeWriterStillRejectsMissingFile(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "no-existe.img")
+
+	_, err := NewSafeWriter(t.TempDir(), missing)
+	if err == nil {
+		t.Fatal("se esperaba error con un archivo de origen inexistente")
+	}
+	if !strings.Contains(err.Error(), "no se pudo acceder al origen") {
+		t.Errorf("error inesperado: %v", err)
 	}
 }

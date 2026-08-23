@@ -105,3 +105,36 @@ func IsRawDevice(path string) bool {
 	}
 	return strings.HasPrefix(path, "/dev/")
 }
+
+// NormalizeSource traduce una letra de unidad suelta a la ruta que de verdad da
+// acceso a los bytes del volumen.
+//
+// En Windows, "D:" NO son los bytes del disco: es la carpeta actual de la
+// unidad D, y "D:\" es su directorio raíz. Abrir cualquiera de las dos da un
+// manejador de directorio, cuyo ReadAt falla con "Incorrect function" y cuyo
+// tamaño es 0 o un valor sin sentido. Para leer el volumen en crudo hay que
+// usar la ruta de espacio de nombres \\.\D:.
+//
+// La traducción es segura porque no hay otra interpretación posible: no se
+// puede hacer file carving sobre un directorio. Las rutas a archivos de imagen
+// ("D:\backup.img") no se tocan.
+//
+// Devuelve la ruta a usar y si hubo cambio, para poder avisar al usuario.
+func NormalizeSource(path string) (string, bool) {
+	if runtime.GOOS != "windows" {
+		return path, false
+	}
+
+	trimmed := strings.TrimRight(path, `\/`)
+
+	// Exactamente "X:" tras quitar barras finales: letra + dos puntos.
+	if len(trimmed) == 2 && trimmed[1] == ':' && isDriveLetter(trimmed[0]) {
+		return `\\.\` + strings.ToUpper(trimmed), true
+	}
+
+	return path, false
+}
+
+func isDriveLetter(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}

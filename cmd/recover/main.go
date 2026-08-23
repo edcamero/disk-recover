@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -68,14 +69,34 @@ func run() error {
 		return fmt.Errorf("modo desconocido %q: usa auto, list o carve", *mode)
 	}
 
+	// Una letra de unidad suelta ("D:") no son los bytes del disco sino un
+	// directorio. Se traduce a la ruta de volumen en crudo, que es lo único que
+	// tiene sentido para esta herramienta.
+	devicePath := *device
+	if normalized, changed := blockdev.NormalizeSource(devicePath); changed {
+		fmt.Printf("ℹ️  %s es un directorio, no un volumen. Usando %s\n\n", devicePath, normalized)
+		devicePath = normalized
+	}
+
 	// 1. Abrir el origen en solo lectura. Nunca se escribe en él.
-	src, err := os.Open(*device)
+	src, err := os.Open(devicePath)
 	if err != nil {
-		return fmt.Errorf("no se pudo abrir %s: %w", *device, err)
+		return openError(devicePath, err)
 	}
 	defer src.Close()
 
-	size, err := sourceSize(src)
+	// Un directorio no se puede escanear: su ReadAt falla con "Incorrect
+	// function" y su tamaño no significa nada. Detectarlo aquí evita un fallo
+	// incomprensible más adelante.
+	if info, statErr := src.Stat(); statErr == nil && info.IsDir() {
+		return fmt.Errorf(
+			"%s es un directorio, no un disco ni una imagen.\n"+
+				"   Para un volumen entero usa la ruta en crudo (ej: %s)\n"+
+				"   Para una imagen, indica el archivo (ej: %s\\backup.img)",
+			devicePath, rawDeviceHint(devicePath), strings.TrimRight(devicePath, `\/`))
+	}
+
+	size, err := blockdev.DeviceSize(src)
 	if err != nil {
 		return err
 	}
@@ -86,9 +107,15 @@ func run() error {
 	// Windows esa última lectura desalineada devuelve ERROR_INVALID_PARAMETER,
 	// así que sin este envoltorio no se recuperaría ni un archivo.
 	var reader io.ReaderAt = src
-	if blockdev.IsRawDevice(*device) {
-		reader = blockdev.NewAligned(src, *sector, size)
-		fmt.Printf("💽 Dispositivo en crudo: lecturas alineadas a %d bytes\n", *sector)
+	if blockdev.IsRawDevice(devicePath) {
+		// Si el usuario no forzó un valor, preguntarle al propio dispositivo.
+		// Un disco 4Kn nativo rechaza cualquier lectura alineada a 512.
+		effectiveSector := *sector
+		if !sectorFlagSet() {
+			effectiveSector = blockdev.DetectSectorSize(src)
+		}
+		reader = blockdev.NewAligned(src, effectiveSector, size)
+		fmt.Printf("💽 Dispositivo en crudo: lecturas alineadas a %d bytes\n", effectiveSector)
 	}
 
 	// 2. Comprobar que no vamos a escribir sobre el propio disco que leemos.
@@ -96,15 +123,15 @@ func run() error {
 	if err := os.MkdirAll(*out, 0o755); err != nil {
 		return fmt.Errorf("no se pudo crear %s: %w", *out, err)
 	}
-	if same, err := sameDeviceCheck(*device, *out); err != nil {
+	if same, err := sameDeviceCheck(devicePath, *out); err != nil {
 		return err
 	} else if same {
 		return fmt.Errorf(
 			"el destino %q está en el mismo dispositivo que el origen %q; "+
-				"nunca escribas en el disco que intentas recuperar", *out, *device)
+				"nunca escribas en el disco que intentas recuperar", *out, devicePath)
 	}
 
-	fmt.Printf("🔍 Analizando: %s (%.2f GB)\n", *device, float64(size)/(1<<30))
+	fmt.Printf("🔍 Analizando: %s (%.2f GB)\n", devicePath, float64(size)/(1<<30))
 	fmt.Printf("📁 Salida: %s\n", *out)
 	fmt.Printf("⚙️  Modo: %s | Clasificar: %v | Solo usuario: %v\n\n", *mode, *classify, *userOnly)
 
@@ -147,7 +174,7 @@ func run() error {
 
 	// 5. FASE CARVE: fallback si list no dio nada, o si se pidió explícitamente.
 	if !listOK || *mode == "carve" {
-		if err := app.runCarve(ctx, reader, size, *device, *sigFile, *category); err != nil {
+		if err := app.runCarve(ctx, reader, size, devicePath, *sigFile, *category); err != nil {
 			return err
 		}
 	}
@@ -403,31 +430,63 @@ func (a *app) printStats() {
 }
 
 // =========================================================================
-// Utilidades
-// =========================================================================
+// sectorFlagSet indica si el usuario pasó -sector explícitamente. Sin esto no
+// se puede distinguir "no lo indicó" de "pidió justo el valor por defecto", y
+// la autodetección pisaría una elección deliberada.
+func sectorFlagSet() bool {
+	set := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "sector" {
+			set = true
+		}
+	})
+	return set
+}
 
-// sourceSize determina el tamaño del origen.
+// openError convierte el fallo de os.Open en algo accionable.
 //
-// Stat().Size() devuelve 0 para dispositivos de bloque en Linux: st_size solo
-// tiene sentido en archivos regulares. Por eso hay que buscar el final del
-// dispositivo. Sin esto, -src /dev/sdb1 aborta con "el tamaño del origen es 0",
-// que era justo el caso de uso principal de la herramienta.
-func sourceSize(f *os.File) (int64, error) {
-	if info, err := f.Stat(); err == nil && info.Size() > 0 {
-		return info.Size(), nil
+// "Access is denied" a secas no le dice al usuario que el problema es de
+// permisos y no del disco, que es la conclusión a la que se llega solo cuando ya
+// se ha perdido un rato.
+func openError(path string, err error) error {
+	if os.IsPermission(err) {
+		if runtime.GOOS == "windows" {
+			return fmt.Errorf(
+				"acceso denegado a %s.\n"+
+					"   Leer un disco en crudo requiere permisos de Administrador:\n"+
+					"   abre PowerShell con «Ejecutar como administrador» y repite el comando", path)
+		}
+		return fmt.Errorf(
+			"acceso denegado a %s.\n"+
+				"   Leer un dispositivo de bloque requiere privilegios: prueba con sudo", path)
 	}
 
-	size, err := f.Seek(0, io.SeekEnd)
-	if err != nil {
-		return 0, fmt.Errorf("no se pudo determinar el tamaño de %s: %w", f.Name(), err)
+	if os.IsNotExist(err) && blockdev.IsRawDevice(path) {
+		return fmt.Errorf(
+			"no existe el dispositivo %s.\n"+
+				"   Comprueba la letra de unidad o el número de disco (%s)", path, listDevicesHint())
 	}
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return 0, fmt.Errorf("no se pudo rebobinar %s: %w", f.Name(), err)
+
+	return fmt.Errorf("no se pudo abrir %s: %w", path, err)
+}
+
+// rawDeviceHint sugiere la ruta en crudo correspondiente a la ruta dada.
+func rawDeviceHint(path string) string {
+	if runtime.GOOS != "windows" {
+		return "/dev/sdb1"
 	}
-	if size <= 0 {
-		return 0, fmt.Errorf("%s no tiene tamaño legible", f.Name())
+	if vol := filepath.VolumeName(path); vol != "" {
+		return `\\.\` + vol
 	}
-	return size, nil
+	return `\\.\D:`
+}
+
+// listDevicesHint indica cómo enumerar los discos disponibles.
+func listDevicesHint() string {
+	if runtime.GOOS == "windows" {
+		return "en PowerShell: Get-Disk, o Get-Volume para las letras"
+	}
+	return "lsblk"
 }
 
 // sameDeviceCheck reutiliza la validación de output creando un SafeWriter de

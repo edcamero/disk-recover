@@ -110,7 +110,55 @@ devolver basura con aspecto de éxito es peor que no devolver nada.
 ### Requisitos
 
 - Go 1.22+
-- Permisos de root **solo** si trabajas con dispositivos de bloque (`/dev/sdX`)
+- Permisos elevados **solo** si trabajas con dispositivos en crudo (`/dev/sdX`, `\\.\PhysicalDrive0`)
+
+Funciona en Linux, macOS y Windows; el binario es nativo en los tres.
+
+### Windows
+
+Con **imágenes de disco** (`.img`, `.dd`) no hay nada especial que hacer:
+
+```powershell
+.\bin\recover.exe -src backup.img -out .\recuperados
+```
+
+Para leer un **disco en crudo** hace falta una consola como Administrador y la
+ruta de espacio de nombres de Windows:
+
+```powershell
+.\bin\recover.exe -src \\.\PhysicalDrive1 -out D:\recuperados -mode=carve
+.\bin\recover.exe -src \\.\E: -out D:\recuperados
+```
+
+> **`-src D:` no lee el disco.** Una letra de unidad suelta en Windows es la
+> *carpeta* de esa unidad, no sus bytes: `ReadAt` sobre ella falla con
+> `Incorrect function` y su tamaño es 0. La herramienta lo detecta y traduce
+> `D:` a `\\.\D:` automáticamente, avisando de lo que ha hecho, pero conviene
+> escribir la ruta correcta desde el principio. Una ruta a un archivo
+> (`D:\backup.img`) nunca se toca.
+
+Al detectar una ruta `\\.\`, la herramienta alinea automáticamente las lecturas
+al tamaño de sector. Es imprescindible: Windows abre esos dispositivos sin búfer
+y exige que **tanto el offset como la longitud** de cada lectura sean múltiplos
+del sector. El carver pide los bytes exactos de cada archivo, y un JPEG rara vez
+mide un múltiplo de 512, así que sin alinear la última lectura de cada archivo
+devolvería `ERROR_INVALID_PARAMETER` y no se recuperaría nada.
+
+Si el disco es 4Kn (sector nativo de 4096 bytes, no emulado):
+
+```powershell
+.\bin\recover.exe -src \\.\PhysicalDrive1 -out D:\recuperados -sector 4096
+```
+
+**Limitación en Windows**: la comprobación "el destino no está en el disco de
+origen" solo funciona con `\\.\X:`, donde se puede comparar la letra de volumen.
+Con `\\.\PhysicalDriveN` no hay forma fiable de asociar el disco físico a una
+unidad sin consultar los volúmenes del sistema, así que esa protección **no
+salta**. Elige el destino con cuidado: nunca en el disco que estás recuperando.
+
+> Como siempre, lo más seguro es trabajar sobre una imagen y no sobre el disco.
+> En Windows puedes hacerla con [ddrelease64](http://www.chrysocome.net/dd) o
+> con `dd` desde WSL.
 
 ### Compilar
 
@@ -146,6 +194,7 @@ sudo dd if=/dev/sdb of=backup.img bs=4M conv=noerror,sync status=progress
 -user-only        Eliminar archivos de sistema/iconos
 -sigfile string   Archivo de firmas adicional (.sig)
 -category string  Filtrar por categoría: image, video, document, archive
+-sector int       Tamaño de sector para dispositivos en crudo (default 512)
 ```
 
 ---

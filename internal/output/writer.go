@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/edcamero/disk-recover/internal/blockdev"
 )
 
 const (
@@ -42,9 +44,17 @@ func NewSafeWriter(destDir string, sourcePath string) (*SafeWriter, error) {
 		return nil, fmt.Errorf("no se pudo crear el directorio de destino: %w", err)
 	}
 
-	// 2. Comprobar que el origen existe antes de seguir
-	if _, err := os.Stat(sourcePath); err != nil {
-		return nil, fmt.Errorf("no se pudo acceder al origen: %w", err)
+	// 2. Comprobar que el origen existe antes de seguir.
+	//
+	// Los dispositivos en crudo se saltan la comprobación: os.Stat sobre
+	// \\.\D: llama a GetFileInformationByHandle, que un manejador de volumen no
+	// implementa y devuelve "Incorrect function". El origen ya está abierto por
+	// el llamante llegados a este punto, así que la comprobación solo aporta un
+	// mensaje mejor cuando la ruta es un archivo que no existe.
+	if !blockdev.IsRawDevice(sourcePath) {
+		if _, err := os.Stat(sourcePath); err != nil {
+			return nil, fmt.Errorf("no se pudo acceder al origen: %w", err)
+		}
 	}
 
 	// 3. VALIDACIÓN CRÍTICA: escribir en el disco que estamos recuperando destruye
