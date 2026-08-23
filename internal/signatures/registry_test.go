@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/edcamero13/disk-recover/pkg/magic"
+	"github.com/edcamero/disk-recover/pkg/magic"
 )
 
 // TestRegistryIndexStability es la regresión de [C9]. La versión anterior

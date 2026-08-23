@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/edcamero13/disk-recover/internal/output"
+	"github.com/edcamero/disk-recover/internal/output"
 )
 
 // headerBytes es cuánto leemos del archivo extraído para buscar metadatos.

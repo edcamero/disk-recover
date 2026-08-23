@@ -6,9 +6,9 @@ import (
 	"io"
 	"sort"
 
-	"github.com/edcamero13/disk-recover/internal/output"
-	"github.com/edcamero13/disk-recover/internal/scanner"
-	"github.com/edcamero13/disk-recover/internal/signatures"
+	"github.com/edcamero/disk-recover/internal/output"
+	"github.com/edcamero/disk-recover/internal/scanner"
+	"github.com/edcamero/disk-recover/internal/signatures"
 )
 
 const (

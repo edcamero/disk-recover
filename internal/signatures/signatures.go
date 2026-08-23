@@ -1,6 +1,6 @@
 package signatures
 
-import "github.com/edcamero13/disk-recover/pkg/magic"
+import "github.com/edcamero/disk-recover/pkg/magic"
 
 // Signature describe cómo identificar un tipo de archivo.
 type Signature struct {

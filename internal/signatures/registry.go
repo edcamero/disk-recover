@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/edcamero13/disk-recover/pkg/magic"
+	"github.com/edcamero/disk-recover/pkg/magic"
 )
 
 // Registry es el registro central de todas las firmas conocidas.

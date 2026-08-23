@@ -1,3 +1,3 @@
-module github.com/edcamero13/disk-recover
+module github.com/edcamero/disk-recover
 
 go 1.22

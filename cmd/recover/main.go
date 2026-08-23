@@ -22,13 +22,14 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/edcamero13/disk-recover/internal/carver"
-	"github.com/edcamero13/disk-recover/internal/classifier"
-	"github.com/edcamero13/disk-recover/internal/filesystem"
-	"github.com/edcamero13/disk-recover/internal/namerecovery"
-	"github.com/edcamero13/disk-recover/internal/output"
-	"github.com/edcamero13/disk-recover/internal/scanner"
-	"github.com/edcamero13/disk-recover/internal/signatures"
+	"github.com/edcamero/disk-recover/internal/blockdev"
+	"github.com/edcamero/disk-recover/internal/carver"
+	"github.com/edcamero/disk-recover/internal/classifier"
+	"github.com/edcamero/disk-recover/internal/filesystem"
+	"github.com/edcamero/disk-recover/internal/namerecovery"
+	"github.com/edcamero/disk-recover/internal/output"
+	"github.com/edcamero/disk-recover/internal/scanner"
+	"github.com/edcamero/disk-recover/internal/signatures"
 )
 
 // systemConfidence es la confianza mínima para mandar algo a system_files.
@@ -54,6 +55,8 @@ func run() error {
 	userOnly := flag.Bool("user-only", false, "solo conservar contenido de usuario")
 	sigFile := flag.String("sigfile", "", "archivo de firmas adicional (.sig)")
 	category := flag.String("category", "", "filtrar por categoría: image, video, document, archive")
+	sector := flag.Int64("sector", blockdev.DefaultSectorSize,
+		"tamaño de sector para dispositivos en crudo (512 o 4096)")
 	flag.Parse()
 
 	if *device == "" {
@@ -75,6 +78,17 @@ func run() error {
 	size, err := sourceSize(src)
 	if err != nil {
 		return err
+	}
+
+	// Sobre un dispositivo en crudo, las lecturas tienen que ir alineadas a
+	// sector. El carver no lo cumple por sí solo: al extraer un archivo lee
+	// exactamente sus bytes, y un JPEG rara vez mide un múltiplo de 512. En
+	// Windows esa última lectura desalineada devuelve ERROR_INVALID_PARAMETER,
+	// así que sin este envoltorio no se recuperaría ni un archivo.
+	var reader io.ReaderAt = src
+	if blockdev.IsRawDevice(*device) {
+		reader = blockdev.NewAligned(src, *sector, size)
+		fmt.Printf("💽 Dispositivo en crudo: lecturas alineadas a %d bytes\n", *sector)
 	}
 
 	// 2. Comprobar que no vamos a escribir sobre el propio disco que leemos.
@@ -109,7 +123,7 @@ func run() error {
 	}
 	if *classify {
 		app.classifier = classifier.New()
-		app.resolver = namerecovery.NewResolver(src)
+		app.resolver = namerecovery.NewResolver(reader)
 	}
 
 	if err := os.MkdirAll(app.staging, 0o755); err != nil {
@@ -120,7 +134,7 @@ func run() error {
 	// 4. FASE LIST
 	listOK := false
 	if *mode == "auto" || *mode == "list" {
-		listOK, err = app.runList(ctx, src, size)
+		listOK, err = app.runList(ctx, reader, size)
 		if err != nil {
 			return err
 		}
@@ -133,7 +147,7 @@ func run() error {
 
 	// 5. FASE CARVE: fallback si list no dio nada, o si se pidió explícitamente.
 	if !listOK || *mode == "carve" {
-		if err := app.runCarve(ctx, src, size, *device, *sigFile, *category); err != nil {
+		if err := app.runCarve(ctx, reader, size, *device, *sigFile, *category); err != nil {
 			return err
 		}
 	}

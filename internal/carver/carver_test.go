@@ -7,9 +7,9 @@ import (
 	"io"
 	"testing"
 
-	"github.com/edcamero13/disk-recover/internal/output"
-	"github.com/edcamero13/disk-recover/internal/signatures"
-	"github.com/edcamero13/disk-recover/pkg/magic"
+	"github.com/edcamero/disk-recover/internal/output"
+	"github.com/edcamero/disk-recover/internal/signatures"
+	"github.com/edcamero/disk-recover/pkg/magic"
 )
 
 // memWriter recoge en memoria lo que el carver quiere escribir. Como Carver

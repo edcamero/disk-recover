@@ -2,8 +2,8 @@
 
 > File carving con clasificación inteligente. Escrito en Go.
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/edcamero13/disk-recover)](https://goreportcard.com/report/github.com/edcamero13/disk-recover)
-[![Go Reference](https://pkg.go.dev/badge/github.com/edcamero13/disk-recover.svg)](https://pkg.go.dev/github.com/edcamero13/disk-recover)
+[![Go Report Card](https://goreportcard.com/badge/github.com/edcamero/disk-recover)](https://goreportcard.com/report/github.com/edcamero/disk-recover)
+[![Go Reference](https://pkg.go.dev/badge/github.com/edcamero/disk-recover.svg)](https://pkg.go.dev/github.com/edcamero/disk-recover)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **TL;DR**: Herramienta CLI y librería Go para recuperar archivos de discos dañados/formateados, con clasificación automática que distingue fotos personales de iconos del sistema.
@@ -115,7 +115,7 @@ devolver basura con aspecto de éxito es peor que no devolver nada.
 ### Compilar
 
 ```bash
-git clone https://github.com/edcamero13/disk-recover
+git clone https://github.com/edcamero/disk-recover
 cd disk-recover
 go build -o bin/disk-recover ./cmd/recover
 ```
@@ -161,10 +161,10 @@ import (
     "log"
     "os"
 
-    "github.com/edcamero13/disk-recover/internal/carver"
-    "github.com/edcamero13/disk-recover/internal/classifier"
-    "github.com/edcamero13/disk-recover/internal/output"
-    "github.com/edcamero13/disk-recover/internal/signatures"
+    "github.com/edcamero/disk-recover/internal/carver"
+    "github.com/edcamero/disk-recover/internal/classifier"
+    "github.com/edcamero/disk-recover/internal/output"
+    "github.com/edcamero/disk-recover/internal/signatures"
 )
 
 func main() {
