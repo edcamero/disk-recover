@@ -29,6 +29,8 @@ cover:
 # Los parsers binarios (NTFS, EXIF, dimensiones) consumen estructuras de discos
 # corruptos: son los candidatos naturales a fuzzing.
 fuzz:
+	go test ./internal/filesystem/ -run=XXX -fuzz=FuzzParseExfatFileSet -fuzztime=60s
+	go test ./internal/validate/ -run=XXX -fuzz=FuzzValidateJPEG -fuzztime=60s
 	go test ./internal/filesystem/ -run=XXX -fuzz=FuzzParseNTFSRecord -fuzztime=60s
 	go test ./internal/classifier/ -run=XXX -fuzz=FuzzParseEXIF -fuzztime=60s
 	go test ./pkg/magic/ -run=XXX -fuzz=FuzzParse -fuzztime=30s

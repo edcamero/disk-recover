@@ -84,24 +84,59 @@ Existen [PhotoRec](https://www.cgsecurity.org/testdisk.html), [Foremost](https:/
 
 ## Estado actual
 
+### Integridad y trazabilidad
+
+| Capacidad | Estado |
+|---|---|
+| **Validación del contenido**: lo corrupto va a `dudosos/`, no mezclado | ✅ |
+| Puntuación de integridad por archivo (0 a 1) | ✅ |
+| Manifiesto de auditoría en JSONL, legible aunque se corte la luz | ✅ |
+| Reanudar un escaneo interrumpido (`-reanudar`) | ✅ |
+| Deduplicación por SHA256, también entre ejecuciones | ✅ |
+| Comprobación de espacio libre antes de empezar | ✅ |
+| Rechazo de escribir en el disco de origen, incluido `\\.\PhysicalDriveN` | ✅ |
+
+### Recuperación
+
 | Capacidad | Estado |
 |---|---|
 | File carving por firmas mágicas, con comodines y búsqueda de footer | ✅ |
-| Escritura atómica: reserva de nombre con `O_EXCL`, `fsync`, SHA256 en streaming | ✅ |
-| Rechazo de escribir en el mismo dispositivo que el origen | ✅ |
+| Escritura atómica: reserva con `O_EXCL`, `fsync`, SHA256 en streaming | ✅ |
 | Clasificación por EXIF, dimensiones y tamaño | ✅ |
-| Recuperación de nombres desde EXIF/XMP y barrido de la entrada de directorio | ✅ |
-| Modo `list` sobre FAT32, con nombres largos (LFN) | ✅ |
+| Recuperación de nombres desde EXIF/XMP y barrido del directorio | ✅ |
+| Modo `list` sobre **FAT32**, con nombres largos (LFN) | ✅ |
+| **Archivos borrados en FAT**: se recupera el nombre largo completo | ✅ |
+| Modo `list` sobre **exFAT**: nombres UTF-16, borrados, `NoFatChain` | ✅ |
 | Modo `list` sobre NTFS: nombre, tamaño y data runs contiguos | ⚠️ Parcial |
 | Archivos NTFS fragmentados (varios data runs) | ❌ Se detectan pero no se extraen |
 | Archivos NTFS residentes (contenido dentro de la MFT) | ❌ Pendiente |
+| Archivos exFAT sin `NoFatChain` (fragmentados) | ❌ Se detectan pero no se extraen |
 | FAT12/FAT16 | ❌ Se detecta y se rechaza explícitamente; usa `-mode=carve` |
 | ext4 | ❌ Solo detección |
-| Recuperación de entradas borradas (`0xE5` en FAT) | ❌ Pendiente |
 
 Lo marcado como pendiente se rechaza de forma explícita en lugar de producir
 resultados silenciosamente incorrectos: en una herramienta de recuperación,
 devolver basura con aspecto de éxito es peor que no devolver nada.
+
+### Sobre la validación
+
+Un archivo recuperado por carving puede estar **fragmentado**: el carver extrae
+cabecera + datos de otro archivo + cola, y el resultado tiene los marcadores
+correctos pero el contenido corrupto. Es indetectable mirando solo la forma.
+
+La validación usa dos señales complementarias, porque ninguna basta sola:
+
+| Señal | Relleno de baja entropía | Otro archivo comprimido |
+|---|---|---|
+| Decodificación completa | **no detecta** | detecta |
+| Racha de bytes idénticos | detecta | **no detecta** |
+
+Un relleno sin ningún `0xFF` no rompe el escapado de marcadores del JPEG, así
+que el decodificador lee códigos Huffman basura pero válidos y termina sin
+error. Por eso hace falta también la heurística de rachas, cuyo umbral se midió
+sobre JPEG reales: el techo es 129 sin importar tamaño ni contenido.
+
+PNG usa el CRC32 de cada chunk, que es determinista y no necesita descomprimir.
 
 ---
 
@@ -195,6 +230,9 @@ sudo dd if=/dev/sdb of=backup.img bs=4M conv=noerror,sync status=progress
 -sigfile string   Archivo de firmas adicional (.sig)
 -category string  Filtrar por categoría: image, video, document, archive
 -sector int       Tamaño de sector para dispositivos en crudo (default 512)
+-reanudar         Continuar un escaneo interrumpido en lugar de empezar de cero
+-no-validar       Desactivar la validación profunda (no distingue íntegro de corrupto)
+-min-libre int    Espacio libre mínimo exigido en el destino, en bytes (default 1GB)
 ```
 
 ---

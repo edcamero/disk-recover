@@ -1,0 +1,138 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Comprobaciones que no dependen del sistema operativo. Se separan para que
+  # fallen rápido y con un mensaje inequívoco.
+  estatico:
+    name: Formato y vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: gofmt
+        run: |
+          sin_formato=$(gofmt -l .)
+          if [ -n "$sin_formato" ]; then
+            echo "Estos archivos no están formateados:"
+            echo "$sin_formato"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Sin dependencias externas
+        # El proyecto mantiene go.mod sin requires a propósito: es una
+        # herramienta forense y cada dependencia es superficie de ataque y de
+        # abandono. Si alguna vez se añade una, que sea una decisión explícita
+        # y no un descuido.
+        run: |
+          if grep -q '^require' go.mod; then
+            echo "go.mod ha ganado dependencias externas:"
+            grep -A20 '^require' go.mod
+            exit 1
+          fi
+
+  pruebas:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Compilar
+        run: go build ./...
+
+      - name: Tests con detector de carreras
+        # -race es el motivo principal de que exista este workflow. El registro
+        # de firmas se consulta desde varias goroutines y esa promesa nunca se
+        # había verificado: en el entorno de desarrollo faltaba un compilador de
+        # C, que cgo necesita.
+        env:
+          CGO_ENABLED: 1
+        run: go test -race ./...
+
+  cobertura:
+    name: Cobertura
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Medir
+        run: go test -coverprofile=coverage.out ./...
+
+      - name: Informe
+        run: go tool cover -func=coverage.out | tail -20
+
+      - name: Umbral mínimo
+        # La cobertura no debe bajar. El umbral se sube conforme sube la real,
+        # nunca al revés.
+        run: |
+          total=$(go tool cover -func=coverage.out | tail -1 | grep -oE '[0-9]+\.[0-9]+')
+          echo "Cobertura total: $total%"
+          if (( $(echo "$total < 55.0" | bc -l) )); then
+            echo "La cobertura bajó del 55% mínimo"
+            exit 1
+          fi
+
+  fuzz:
+    name: Fuzzing de parsers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      # Los parsers binarios consumen estructuras de discos corruptos: son el
+      # sitio donde un panic tumba una recuperación de horas. Se les da un
+      # tiempo corto en cada CI; las campañas largas van aparte.
+      - name: MFT de NTFS
+        run: go test ./internal/filesystem/ -run=XXX -fuzz=FuzzParseNTFSRecord -fuzztime=45s
+
+      - name: Conjuntos de directorio de exFAT
+        run: go test ./internal/filesystem/ -run=XXX -fuzz=FuzzParseExfatFileSet -fuzztime=45s
+
+      - name: EXIF
+        run: go test ./internal/classifier/ -run=XXX -fuzz=FuzzParseEXIF -fuzztime=30s
+
+      - name: Validador de JPEG
+        run: go test ./internal/validate/ -run=XXX -fuzz=FuzzValidateJPEG -fuzztime=30s
+
+      - name: Patrones mágicos
+        run: go test ./pkg/magic/ -run=XXX -fuzz=FuzzParse -fuzztime=30s
+
+  compilacion-cruzada:
+    name: Compilación cruzada
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Todas las plataformas soportadas
+        run: |
+          for objetivo in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            os=${objetivo%/*}
+            arch=${objetivo#*/}
+            echo "→ $objetivo"
+            GOOS=$os GOARCH=$arch go build ./... || exit 1
+          done
