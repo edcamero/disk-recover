@@ -34,7 +34,11 @@ type Result struct {
 	Offset int64  // offset absoluto donde empezaba en el origen
 	Size   int64
 	Type   string // nombre de la firma que lo identificó ("jpeg", "png", ...)
-	SHA256 string
+	// FooterHallado indica si el archivo terminó en su marcador de fin o en el
+	// tope de MaxSize. Es una señal de integridad: un archivo cortado por el
+	// tope pudo quedarse a medias.
+	FooterHallado bool
+	SHA256        string
 }
 
 // Carver busca archivos por firmas mágicas en un origen sin sistema de archivos
@@ -48,6 +52,15 @@ type Carver struct {
 	registry   *signatures.Registry
 	onProgress func(scanner.Progress)
 	cancel     <-chan struct{}
+
+	// start es el offset desde el que arrancar, distinto de cero al reanudar.
+	start int64
+
+	// footerBuf se reutiliza en findSize. Ver el comentario alli.
+	footerBuf []byte
+
+	// ilegibles recoge las regiones que el scanner no pudo leer.
+	ilegibles []scanner.Region
 
 	// processedUntil es el primer offset todavía no evaluado. Sirve para dos
 	// cosas a la vez: descartar las coincidencias repetidas de la zona de
@@ -75,6 +88,12 @@ func (c *Carver) SetProgressCallback(cb func(scanner.Progress)) {
 // SetCancelChannel permite abortar el escaneo de forma ordenada, típicamente
 // desde un manejador de SIGINT. Un carving sobre un disco de 2 TB dura horas;
 // sin esto, Ctrl+C mata el proceso y se pierde el resumen de lo recuperado.
+func (c *Carver) SetStartOffset(offset int64) {
+	c.start = offset
+	c.processedUntil = offset
+}
+
+// SetCancelChannel permite abortar el escaneo de forma ordenada.
 func (c *Carver) SetCancelChannel(cancel <-chan struct{}) {
 	c.cancel = cancel
 }
@@ -100,6 +119,9 @@ func (c *Carver) Run() ([]Result, error) {
 		BlockSize: blockSize,
 		Overlap:   overlap,
 	})
+	if c.start > 0 {
+		sc.SetStartOffset(c.start)
+	}
 	if c.cancel != nil {
 		sc.SetCancelChannel(c.cancel)
 	}
@@ -109,6 +131,10 @@ func (c *Carver) Run() ([]Result, error) {
 
 	var results []Result
 	counters := make(map[string]int)
+
+	// El scanner acumula las regiones que no pudo leer; se recogen al final
+	// para que el llamante pueda anotarlas en el manifiesto.
+	defer func() { c.ilegibles = sc.Unreadable() }()
 
 	err := sc.Scan(func(offset int64, data []byte) error {
 		// 1. Reunir todas las coincidencias del bloque, de todas las firmas.
@@ -139,7 +165,7 @@ func (c *Carver) Run() ([]Result, error) {
 			}
 			c.processedUntil = cand.offset + 1
 
-			size := c.findSize(cand.sig, cand.offset)
+			size, conFooter := c.findSize(cand.sig, cand.offset)
 			if size <= 0 {
 				continue
 			}
@@ -155,11 +181,12 @@ func (c *Carver) Run() ([]Result, error) {
 			}
 
 			results = append(results, Result{
-				Path:   res.FinalPath,
-				Offset: cand.offset,
-				Size:   res.Size,
-				Type:   cand.sig.Name,
-				SHA256: res.SHA256,
+				Path:          res.FinalPath,
+				Offset:        cand.offset,
+				Size:          res.Size,
+				Type:          cand.sig.Name,
+				FooterHallado: conFooter,
+				SHA256:        res.SHA256,
 			})
 			c.processedUntil = cand.offset + size
 		}
@@ -182,7 +209,7 @@ func (c *Carver) Run() ([]Result, error) {
 // header sin su footer correspondiente es casi siempre un falso positivo, y
 // extraer MaxSize bytes de basura por cada uno llena el destino sin aportar
 // nada.
-func (c *Carver) findSize(sig signatures.Signature, globalOffset int64) int64 {
+func (c *Carver) findSize(sig signatures.Signature, globalOffset int64) (size int64, conFooter bool) {
 	limit := sig.MaxSize
 	if limit <= 0 {
 		limit = defaultMaxSize
@@ -191,15 +218,24 @@ func (c *Carver) findSize(sig signatures.Signature, globalOffset int64) int64 {
 		limit = remaining
 	}
 	if limit <= 0 {
-		return 0
+		return 0, false
 	}
 
 	// Sin footer no hay forma de saber dónde acaba: se extrae hasta el tope.
 	if len(sig.Footer) == 0 {
-		return limit
+		return limit, false
 	}
 
-	buf := make([]byte, footerChunkSize)
+	// Buffer reutilizado entre llamadas. Antes se asignaba 1 MB POR CANDIDATO,
+	// y los candidatos incluyen los falsos positivos: en un disco con muchos
+	// headers sueltos eso son megabytes de basura para el GC por cada bloque.
+	// findSize se llama desde el callback del scanner, que es de una sola
+	// goroutine, así que un campo del Carver basta y no hace falta sync.Pool.
+	if c.footerBuf == nil {
+		c.footerBuf = make([]byte, footerChunkSize)
+	}
+	buf := c.footerBuf
+
 	// Retrocedemos len(Footer)-1 bytes entre lecturas para no perder un footer
 	// partido entre dos chunks.
 	back := int64(len(sig.Footer) - 1)
@@ -218,7 +254,7 @@ func (c *Carver) findSize(sig signatures.Signature, globalOffset int64) int64 {
 				from = sig.Header.Len()
 			}
 			if idx := bytes.Index(buf[from:n], sig.Footer); idx >= 0 {
-				return pos + int64(from+idx+len(sig.Footer))
+				return pos + int64(from+idx+len(sig.Footer)), true
 			}
 		}
 		if err != nil || int64(n) <= back {
@@ -227,5 +263,13 @@ func (c *Carver) findSize(sig signatures.Signature, globalOffset int64) int64 {
 		pos += int64(n) - back
 	}
 
-	return 0
+	return 0, false
+}
+
+// Ilegibles devuelve las regiones del origen que no se pudieron leer durante
+// el ultimo Run. Solo tiene contenido despues de ejecutarlo.
+func (c *Carver) Ilegibles() []scanner.Region {
+	out := make([]scanner.Region, len(c.ilegibles))
+	copy(out, c.ilegibles)
+	return out
 }

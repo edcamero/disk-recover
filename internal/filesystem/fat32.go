@@ -212,10 +212,18 @@ func (l *Lister) walkFAT32Dir(
 		attr := entry[11]
 
 		// Entrada de nombre largo: acumular y seguir.
+		//
+		// Se acumulan TAMBIÉN las de archivos borrados. Al borrar, FAT solo
+		// sobrescribe el PRIMER byte de cada entrada del archivo con 0xE5; en
+		// una entrada LFN ese byte es el número de secuencia, mientras que los
+		// caracteres del nombre viven en los bytes 1-10, 14-25 y 28-31 y quedan
+		// intactos. Como las entradas LFN preceden a su 8.3 en orden inverso, la
+		// posición basta para reensamblar y se recupera el nombre completo.
+		//
+		// Descartarlas era perder el nombre real de justo los archivos que más
+		// interesa recuperar: los borrados.
 		if attr&attrLongName == attrLongName {
-			if !deleted {
-				lfnParts = append(lfnParts, decodeLFNPart(entry))
-			}
+			lfnParts = append(lfnParts, decodeLFNPart(entry))
 			continue
 		}
 
@@ -228,7 +236,11 @@ func (l *Lister) walkFAT32Dir(
 		name := assembleLFN(lfnParts)
 		lfnParts = lfnParts[:0]
 		if name == "" {
-			name = extractFATShortName(entry)
+			// Sin nombre largo solo queda el 8.3. Si la entrada está borrada, su
+			// primera letra se perdió al marcarla con 0xE5 y no hay forma de
+			// recuperarla: se sustituye por '_' en lugar de dejar un byte no
+			// imprimible que acabaría saneado a cualquier cosa.
+			name = extractFATShortName(entry, deleted)
 		}
 		if name == "" || name == "." || name == ".." {
 			continue
@@ -348,7 +360,7 @@ func assembleLFN(parts []string) string {
 	return strings.TrimSpace(sb.String())
 }
 
-func extractFATShortName(entry []byte) string {
+func extractFATShortName(entry []byte, deleted bool) string {
 	raw := make([]byte, 11)
 	copy(raw, entry[0:11])
 
@@ -356,6 +368,13 @@ func extractFATShortName(entry []byte) string {
 	// confundirlo con la marca de entrada borrada.
 	if raw[0] == 0x05 {
 		raw[0] = 0xE5
+	}
+
+	// En una entrada borrada el primer carácter del nombre fue sustituido por
+	// la marca 0xE5 y es irrecuperable. Se marca con '_' para que el nombre siga
+	// siendo legible y quede claro que falta una letra.
+	if deleted && raw[0] == entryFree {
+		raw[0] = '_'
 	}
 
 	name := strings.TrimRight(string(raw[0:8]), " \x00")

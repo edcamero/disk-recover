@@ -375,3 +375,112 @@ func TestDecodeFATTimeRejectsImpossibleDates(t *testing.T) {
 		t.Errorf("decodeFATTime aceptó una fecha imposible: %v", got)
 	}
 }
+
+// marcarBorrada simula el borrado de FAT: solo se sobrescribe el PRIMER byte de
+// cada entrada del archivo con 0xE5. El resto queda intacto.
+func marcarBorrada(e []byte) []byte {
+	out := make([]byte, len(e))
+	copy(out, e)
+	out[0] = entryFree
+	return out
+}
+
+// TestFAT32EntradaBorradaRecuperaNombreLargo es el caso de uso mas comun de toda
+// la herramienta: "borre mis fotos".
+//
+// Al borrar, FAT solo pisa el primer byte de cada entrada. En una entrada LFN
+// ese byte es el numero de secuencia, no un caracter del nombre, asi que el
+// nombre completo sobrevive. Descartar las entradas LFN borradas —como se hacia
+// antes— perdia el nombre real de justo los archivos que mas interesan.
+func TestFAT32EntradaBorradaRecuperaNombreLargo(t *testing.T) {
+	img := newFAT32Image(16)
+
+	// "Vacaciones2024.jpg" borrada: las tres entradas marcadas con 0xE5.
+	img.writeDirEntries(2,
+		marcarBorrada(lfnEntry(2, true, "24.jpg")),
+		marcarBorrada(lfnEntry(1, false, "Vacaciones20")),
+		marcarBorrada(shortEntry("VACACI~1", "JPG", 0x20, 3, 2048)),
+	)
+
+	l := NewLister(bytes.NewReader(img.data), img.size())
+	entries, err := l.listFAT32()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var encontrada *FileEntry
+	for i := range entries {
+		if strings.EqualFold(entries[i].Name, "Vacaciones2024.jpg") {
+			encontrada = &entries[i]
+			break
+		}
+	}
+
+	if encontrada == nil {
+		var nombres []string
+		for _, e := range entries {
+			nombres = append(nombres, e.Name)
+		}
+		t.Fatalf("no se recupero el nombre largo del archivo borrado; se obtuvo %v", nombres)
+	}
+	if !encontrada.IsDeleted {
+		t.Error("IsDeleted = false en una entrada marcada con 0xE5")
+	}
+	if !encontrada.Recoverable {
+		t.Error("Recoverable = false: los datos siguen ahi si son contiguos")
+	}
+	t.Logf("recuperado %q (borrado, %d bytes)", encontrada.Name, encontrada.Size)
+}
+
+// TestFAT32BorradaSinNombreLargo: sin entradas LFN solo queda el 8.3, cuya
+// primera letra se perdio. Debe quedar legible y evidenciar que falta.
+func TestFAT32BorradaSinNombreLargo(t *testing.T) {
+	img := newFAT32Image(8)
+	img.writeDirEntries(2, marcarBorrada(shortEntry("FOTO", "JPG", 0x20, 3, 1024)))
+
+	l := NewLister(bytes.NewReader(img.data), img.size())
+	entries, _ := l.listFAT32()
+
+	if len(entries) == 0 {
+		t.Fatal("no se devolvio la entrada borrada")
+	}
+	nombre := entries[0].Name
+	if !strings.HasPrefix(nombre, "_") {
+		t.Errorf("Name = %q, se esperaba que empezara por '_' marcando la letra perdida", nombre)
+	}
+	for _, r := range nombre {
+		if r < 0x20 || r == 0x7F {
+			t.Errorf("Name = %q contiene un caracter no imprimible", nombre)
+		}
+	}
+	t.Logf("entrada borrada sin LFN -> %q", nombre)
+}
+
+// TestFAT32VivasYBorradasSeDistinguen: la marca debe ser fiable, porque el
+// llamante decide en base a ella.
+func TestFAT32VivasYBorradasSeDistinguen(t *testing.T) {
+	img := newFAT32Image(16)
+	img.writeDirEntries(2,
+		shortEntry("VIVA", "JPG", 0x20, 3, 1000),
+		marcarBorrada(shortEntry("MUERTA", "JPG", 0x20, 4, 2000)),
+		shortEntry("VIVA2", "PNG", 0x20, 5, 3000),
+	)
+
+	l := NewLister(bytes.NewReader(img.data), img.size())
+	entries, _ := l.listFAT32()
+
+	var vivas, borradas int
+	for _, e := range entries {
+		if e.IsDeleted {
+			borradas++
+		} else {
+			vivas++
+		}
+	}
+	if vivas != 2 {
+		t.Errorf("%d entradas vivas, se esperaban 2", vivas)
+	}
+	if borradas != 1 {
+		t.Errorf("%d entradas borradas, se esperaba 1", borradas)
+	}
+}

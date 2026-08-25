@@ -16,6 +16,10 @@ type FileEntry struct {
 	ModTime     time.Time
 	IsDeleted   bool // true si estaba en espacio "liberado"
 	Recoverable bool // true si los clusters son contiguos
+
+	// firstCluster es interno: lo usa el recorrido de directorios para bajar a
+	// los subdirectorios sin recalcularlo desde el offset.
+	firstCluster uint32
 }
 
 // Lister recorre un sistema de archivos dañado tolerando errores
@@ -42,6 +46,8 @@ func (l *Lister) List() ([]FileEntry, error) {
 	switch l.fsType {
 	case "fat32":
 		return l.listFAT32()
+	case "exfat":
+		return l.listExfat()
 	case "ntfs":
 		return l.listNTFS()
 	case "fat16":
@@ -82,6 +88,14 @@ func (l *Lister) detectFilesystem() string {
 		if uint16(buf[1080])|uint16(buf[1081])<<8 == 0xEF53 {
 			return "ext4"
 		}
+	}
+
+	// exFAT: "EXFAT   " en el offset 3, el mismo sitio donde FAT32 pone su OEM
+	// ID. Se comprueba ANTES que FAT porque un volumen exFAT también lleva la
+	// firma 0x55AA del final del sector, así que la comprobación de FAT lo
+	// reclamaría primero y se intentaría leerlo con un BPB que no tiene.
+	if len(buf) >= 11 && string(buf[3:11]) == "EXFAT   " {
+		return "exfat"
 	}
 
 	// FAT: firma 0x55AA al final del sector de arranque.

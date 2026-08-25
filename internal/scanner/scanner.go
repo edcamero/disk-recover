@@ -44,6 +44,10 @@ type Scanner struct {
 	onProgress func(Progress)
 	cancel     <-chan struct{}
 
+	// start es el offset desde el que arrancar. Distinto de cero al reanudar
+	// un escaneo interrumpido.
+	start int64
+
 	// unreadable acumula los tramos que no se pudieron leer, para poder
 	// informar al final de qué se perdió y dónde.
 	unreadable []Region
@@ -102,7 +106,17 @@ func (s *Scanner) Scan(callback func(offset int64, data []byte) error) error {
 	// bloque de 1 MB por iteración.
 	buf := make([]byte, s.config.BlockSize+s.config.Overlap)
 
-	var offset int64
+	// Al reanudar se arranca desde donde quedó el escaneo anterior, retrocediendo
+	// el solape: una firma que empezara justo antes del punto de corte se
+	// perdería si se empezara exactamente ahí.
+	offset := s.start
+	if offset > 0 {
+		offset -= int64(s.config.Overlap)
+		if offset < 0 {
+			offset = 0
+		}
+	}
+
 	startTime := time.Now()
 	lastProgressTime := startTime
 
@@ -262,3 +276,16 @@ func (s *Scanner) reportProgress(current int64, start, now time.Time) {
 // maxETASeconds es el tope de segundos que cabe en un time.Duration
 // (int64 de nanosegundos) sin desbordar.
 const maxETASeconds = 1 << 33
+
+// SetStartOffset indica desde qué punto del origen arrancar el escaneo.
+//
+// Se usa al reanudar: el manifiesto de una ejecución interrumpida dice hasta
+// dónde se llegó, y repetir ese trabajo en un disco de 2 TB cuesta horas. Scan
+// retrocede el solape por su cuenta, así que basta con pasar el último offset
+// procesado.
+func (s *Scanner) SetStartOffset(offset int64) {
+	if offset < 0 {
+		offset = 0
+	}
+	s.start = offset
+}
