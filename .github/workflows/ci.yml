@@ -66,29 +66,17 @@ jobs:
           CGO_ENABLED: 1
         run: go test -race ./...
 
-  cobertura:
-    name: Cobertura
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-
-      - name: Medir
-        run: go test -coverprofile=coverage.out ./...
-
-      - name: Informe
-        run: go tool cover -func=coverage.out | tail -20
-
-      - name: Umbral mínimo
+      - name: Cobertura y umbral mínimo
+        if: matrix.os == 'ubuntu-latest'
         # La cobertura no debe bajar. El umbral se sube conforme sube la real,
         # nunca al revés.
         run: |
+          go test -coverprofile=coverage.out ./...
+          go tool cover -func=coverage.out | tail -20
           total=$(go tool cover -func=coverage.out | tail -1 | grep -oE '[0-9]+\.[0-9]+')
           echo "Cobertura total: $total%"
-          if (( $(echo "$total < 55.0" | bc -l) )); then
-            echo "La cobertura bajó del 55% mínimo"
+          if (( $(echo "$total < 62.0" | bc -l) )); then
+            echo "La cobertura bajó del 62% mínimo"
             exit 1
           fi
 

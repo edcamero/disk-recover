@@ -1,8 +1,10 @@
 package manifest
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -447,5 +449,86 @@ func TestAppendRecortaLineaIncompleta(t *testing.T) {
 	}
 	if final.Truncado {
 		t.Error("el manifiesto quedo marcado como truncado tras reanudar")
+	}
+}
+
+// TestRecortarNoCargaElManifiestoEntero es la regresion de un consumo que
+// escala con el numero de archivos recuperados.
+//
+// Con ~386 bytes por entrada, un disco del que se recuperan un millon de
+// archivos produce un manifiesto de 386 MB. La version anterior hacia
+// os.ReadFile + os.WriteFile para recortar la ultima linea, es decir, lo
+// cargaba entero en memoria y lo reescribia, y eso pasaba en CADA reanudacion.
+func TestRecortarNoCargaElManifiestoEntero(t *testing.T) {
+	if testing.Short() {
+		t.Skip("omitido en modo -short")
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, Nombre)
+
+	// Manifiesto grande: suficiente para que una lectura completa se
+	// distinga con claridad del ruido de medicion. Cada Add hace fsync —es el
+	// punto de control para reanudar— asi que no conviene pasarse.
+	w, err := Create(dir, Header{Origen: "grande.img", OrigenBytes: 1 << 40, Modo: "carve"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 20000; i++ {
+		w.Add(entrada(int64(i)*4096, 4096, "hash"))
+	}
+	w.Abort()
+
+	info, _ := os.Stat(path)
+	t.Logf("manifiesto de prueba: %.1f MB", float64(info.Size())/(1<<20))
+
+	// Dejar la ultima linea a medias.
+	f, _ := os.OpenFile(path, os.O_RDWR, 0o644)
+	f.Truncate(info.Size() - 40)
+	f.Close()
+
+	runtime.GC()
+	var antes runtime.MemStats
+	runtime.ReadMemStats(&antes)
+
+	if err := recortarLineaIncompleta(path); err != nil {
+		t.Fatal(err)
+	}
+
+	var despues runtime.MemStats
+	runtime.ReadMemStats(&despues)
+	asignado := despues.TotalAlloc - antes.TotalAlloc
+	t.Logf("asignados al recortar: %.2f MB", float64(asignado)/(1<<20))
+
+	// La ventana de busqueda son 64 KB. Un tope de 1 MB separa con holgura el
+	// recorte acotado de una lectura completa de 40 MB.
+	const tope = 1 << 20
+	if asignado > tope {
+		t.Errorf("se asignaron %.2f MB para recortar un manifiesto de %.1f MB: "+
+			"se esta cargando entero",
+			float64(asignado)/(1<<20), float64(info.Size())/(1<<20))
+	}
+
+	// Y el resultado debe seguir siendo legible.
+	res, err := Read(path)
+	if err != nil {
+		t.Fatalf("el manifiesto recortado no se puede leer: %v", err)
+	}
+	if len(res.Entradas) < 19000 {
+		t.Errorf("solo %d entradas tras recortar, se perdieron demasiadas", len(res.Entradas))
+	}
+}
+
+// TestRecortarSinNingunaLineaCompleta: un archivo sin saltos de linea en su
+// cola no es un manifiesto. Truncarlo entero destruiria datos, asi que se
+// prefiere fallar.
+func TestRecortarSinNingunaLineaCompleta(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "basura.jsonl")
+	if err := os.WriteFile(path, bytes.Repeat([]byte{'x'}, 100<<10), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := recortarLineaIncompleta(path); err == nil {
+		t.Error("se esperaba error con un archivo sin ninguna linea completa")
 	}
 }

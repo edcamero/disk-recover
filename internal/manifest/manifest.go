@@ -172,31 +172,66 @@ func Append(destDir string, previo *Resumen) (*Writer, error) {
 	return w, nil
 }
 
+// colaMaxLinea acota cuanto se retrocede buscando el ultimo salto de linea.
+//
+// Una entrada del manifiesto ronda los 400 bytes; 64 KB da margen de sobra
+// incluso para una con rutas y motivos de error muy largos.
+const colaMaxLinea = 64 << 10
+
 // recortarLineaIncompleta deja el archivo terminado en un salto de linea,
 // descartando cualquier resto parcial del final.
+//
+// Solo toca la COLA del archivo. La version anterior hacia os.ReadFile seguido
+// de os.WriteFile, es decir, cargaba el manifiesto entero en memoria y lo
+// reescribia: con 386 bytes por entrada, un disco del que se recuperan un
+// millon de archivos da un manifiesto de 386 MB, y eso ocurriria en CADA
+// reanudacion. Truncar en su lugar es O(1) y no asigna nada apreciable.
 func recortarLineaIncompleta(path string) error {
-	data, err := os.ReadFile(path)
+	f, err := os.OpenFile(path, os.O_RDWR, 0o644)
 	if err != nil {
 		return err
 	}
-	if len(data) == 0 {
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	size := info.Size()
+	if size == 0 {
 		return nil
 	}
-	if data[len(data)-1] == '\n' {
+
+	ventana := int64(colaMaxLinea)
+	if ventana > size {
+		ventana = size
+	}
+	buf := make([]byte, ventana)
+	if _, err := f.ReadAt(buf, size-ventana); err != nil && err != io.EOF {
+		return err
+	}
+
+	if buf[len(buf)-1] == '\n' {
 		return nil // ya termina limpio
 	}
 
-	corte := -1
-	for i := len(data) - 1; i >= 0; i-- {
-		if data[i] == '\n' {
-			corte = i + 1
+	// Buscar hacia atras el ultimo salto de linea dentro de la ventana.
+	corte := int64(-1)
+	for i := len(buf) - 1; i >= 0; i-- {
+		if buf[i] == '\n' {
+			corte = size - ventana + int64(i) + 1
 			break
 		}
 	}
 	if corte < 0 {
-		corte = 0
+		// Ni un salto de linea en 64 KB: el archivo no tiene forma de
+		// manifiesto. Truncar entero seria destruir datos que quiza sirvan, asi
+		// que se prefiere fallar y que el llamante decida.
+		return fmt.Errorf("el manifiesto %s no tiene ninguna linea completa en sus ultimos %d bytes",
+			path, ventana)
 	}
-	return os.WriteFile(path, data[:corte], 0o644)
+
+	return f.Truncate(corte)
 }
 
 // Add registra un archivo recuperado y lo sincroniza a disco de inmediato.

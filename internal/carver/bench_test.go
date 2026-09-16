@@ -213,3 +213,93 @@ func TestThroughput1GB(t *testing.T) {
 // Alias finos sobre time para no importarlo dos veces en el fichero.
 func testingNow() time.Time                  { return time.Now() }
 func testingSince(t time.Time) time.Duration { return time.Since(t) }
+
+// discoConHeadersFalsos genera ruido pseudoaleatorio con un header JPEG cada
+// 4 KB y ningun footer: el peor caso para findSize, que tiene que recorrer
+// hasta MaxSize por cada candidato antes de descartar.
+// Se elimina 0xFF del ruido para que no aparezca ningun footer por casualidad.
+func discoConHeadersFalsos(size int) []byte {
+	disk := make([]byte, size)
+	var s uint32 = 0x1234
+	for i := range disk {
+		s = s*1664525 + 1013904223
+		disk[i] = byte(s >> 24)
+		if disk[i] == 0xFF {
+			disk[i] = 0xFE
+		}
+	}
+	for off := 0; off+3 < size; off += 4096 {
+		copy(disk[off:], []byte{0xFF, 0xD8, 0xFF})
+	}
+	return disk
+}
+
+// BenchmarkFalsosPositivos estresa findSize, que es donde la auditoria situaba
+// una asignacion cara. En la version anterior asignaba 1 MB por candidato sin
+// footer; los benchmarks de escaneo normal no lo distinguian del ruido.
+func BenchmarkFalsosPositivos(b *testing.B) {
+	const size = 8 << 20
+	disk := discoConHeadersFalsos(size)
+
+	reg := signatures.NewRegistry()
+	if err := reg.Register(signatures.DefaultSignatures[0]); err != nil { // jpeg
+		b.Fatal(err)
+	}
+
+	b.SetBytes(int64(size))
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		c := New(bytes.NewReader(disk), int64(size), &discardWriter{}, reg)
+		if _, err := c.Run(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// TestFindSizeReutilizaBuffer es la regresion del arreglo de asignaciones.
+//
+// Medido sobre 8 MB con un header JPEG cada 4 KB:
+//
+//	asignando por candidato -> 59,5 MB/op
+//	reutilizando el buffer  -> 15,5 MB/op
+//
+// El test comprueba el LIMITE de asignacion, no el rendimiento, que es
+// demasiado ruidoso para afirmar nada.
+func TestFindSizeReutilizaBuffer(t *testing.T) {
+	if testing.Short() {
+		t.Skip("omitido en modo -short")
+	}
+
+	const size = 8 << 20
+	disk := discoConHeadersFalsos(size)
+
+	reg := signatures.NewRegistry()
+	if err := reg.Register(signatures.DefaultSignatures[0]); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime.GC()
+	var antes runtime.MemStats
+	runtime.ReadMemStats(&antes)
+
+	c := New(bytes.NewReader(disk), int64(size), &discardWriter{}, reg)
+	if _, err := c.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	var despues runtime.MemStats
+	runtime.ReadMemStats(&despues)
+
+	asignado := despues.TotalAlloc - antes.TotalAlloc
+	t.Logf("asignado con %d headers falsos: %.1f MB", size/4096, float64(asignado)/(1<<20))
+
+	// Tope holgado: el valor medido reutilizando es ~15 MB, sin reutilizar ~60.
+	// 30 MB separa ambos casos sin ser fragil ante cambios menores.
+	const tope = 30 << 20
+	if asignado > tope {
+		t.Errorf("se asignaron %.1f MB, tope %.1f MB: findSize dejo de reutilizar el buffer",
+			float64(asignado)/(1<<20), float64(tope)/(1<<20))
+	}
+}

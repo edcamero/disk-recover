@@ -59,6 +59,61 @@ func (e *Extractor) ExtractTo(entry FileEntry, destPath string) (ExtractResult, 
 	}
 	defer f.Close()
 
+	// NTFS residente: el contenido ya está en memoria, no hay que leer del disco.
+	if entry.Data != nil {
+		n, werr := f.Write(entry.Data)
+		res.Written = int64(n)
+		if !entry.ModTime.IsZero() {
+			os.Chtimes(destPath, entry.ModTime, entry.ModTime)
+		}
+		return res, werr
+	}
+
+	// exFAT fragmentado: el archivo ocupa varios extents no contiguos.
+	if len(entry.Extents) > 0 {
+		buf := make([]byte, readChunk)
+		zeroes := make([]byte, readChunk)
+		remaining := entry.Size
+		for _, ext := range entry.Extents {
+			extOff, extLeft := ext.Offset, ext.Size
+			for extLeft > 0 && remaining > 0 {
+				toRead := int64(len(buf))
+				if toRead > extLeft {
+					toRead = extLeft
+				}
+				if toRead > remaining {
+					toRead = remaining
+				}
+				n, rerr := e.src.ReadAt(buf[:toRead], extOff)
+				if n > 0 {
+					if _, werr := f.Write(buf[:n]); werr != nil {
+						return res, fmt.Errorf("error escribiendo %s: %w", destPath, werr)
+					}
+					res.Written += int64(n)
+				}
+				if rerr != nil {
+					if gap := toRead - int64(n); gap > 0 {
+						if _, werr := f.Write(zeroes[:gap]); werr != nil {
+							return res, fmt.Errorf("error escribiendo relleno en %s: %w", destPath, werr)
+						}
+						res.Written += gap
+						res.ZeroFilled += gap
+					}
+				}
+				extOff += toRead
+				extLeft -= toRead
+				remaining -= toRead
+			}
+			if remaining <= 0 {
+				break
+			}
+		}
+		if !entry.ModTime.IsZero() {
+			os.Chtimes(destPath, entry.ModTime, entry.ModTime)
+		}
+		return res, nil
+	}
+
 	buf := make([]byte, readChunk)
 	zeroes := make([]byte, readChunk) // reutilizado; antes se asignaba por iteración
 

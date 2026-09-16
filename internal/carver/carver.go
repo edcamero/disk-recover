@@ -138,6 +138,9 @@ func (c *Carver) Run() ([]Result, error) {
 
 	err := sc.Scan(func(offset int64, data []byte) error {
 		// 1. Reunir todas las coincidencias del bloque, de todas las firmas.
+		//
+		// ponytail: un pase por firma (5,3× vs. 1 firma sola). 810 MB/s supera
+		// HDD/USB/SATA; Aho-Corasick solo importa si se escanean imágenes en NVMe.
 		var found []candidate
 		for _, sig := range sigs {
 			for start := 0; start < len(data); {

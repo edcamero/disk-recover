@@ -172,7 +172,7 @@ func (l *Lister) walkExfatDir(
 			continue
 		}
 
-		fe, consumidos := l.parseExfatFileSet(dirData[i:], p, esBorrado)
+		fe, consumidos := l.parseExfatFileSet(dirData[i:], p, fat, esBorrado)
 		if consumidos <= 0 {
 			i += dirEntrySize
 			continue
@@ -203,7 +203,7 @@ func (l *Lister) walkExfatDir(
 // Devuelve la entrada y cuantos bytes consumio, para que el recorrido avance
 // sobre el conjunto completo y no reinterprete sus miembros como entradas
 // sueltas.
-func (l *Lister) parseExfatFileSet(data []byte, p *exfatParams, borrado bool) (*FileEntry, int) {
+func (l *Lister) parseExfatFileSet(data []byte, p *exfatParams, fat *fatTable, borrado bool) (*FileEntry, int) {
 	if len(data) < dirEntrySize {
 		return nil, 0
 	}
@@ -292,15 +292,60 @@ func (l *Lister) parseExfatFileSet(data []byte, p *exfatParams, borrado bool) (*
 	}
 	fe.Offset = offset
 
-	// Recoverable solo si sabemos que los datos son contiguos. Con NoFatChain
-	// activo lo garantiza el propio formato; sin el, harian falta las cadenas de
-	// la FAT y un FileEntry con un unico Offset no puede representarlo.
-	fe.Recoverable = !fe.IsDir &&
-		fe.Size > 0 &&
-		noFatChain &&
-		offset+fe.Size <= l.size
+	if !fe.IsDir && fe.Size > 0 {
+		if noFatChain {
+			fe.Recoverable = offset+fe.Size <= l.size
+		} else {
+			// Fragmentado: recorrer la cadena FAT para obtener los extents.
+			fe.Extents = l.exfatExtents(fe.firstCluster, p, fat, fe.Size)
+			fe.Recoverable = len(fe.Extents) > 0
+		}
+	}
 
 	return fe, total
+}
+
+// exfatExtents sigue la cadena FAT desde startCluster y devuelve los extents
+// en orden, sin leer los datos. limit es el tamaño declarado del archivo; se
+// usa para no sobrepasar lo que el directorio indica.
+func (l *Lister) exfatExtents(startCluster uint32, p *exfatParams, fat *fatTable, limit int64) []Extent {
+	var exts []Extent
+	cluster := startCluster
+	seen := make(map[uint32]bool)
+	var total int64
+
+	for i := 0; i < maxClustersPerChain && total < limit; i++ {
+		if cluster < 2 || seen[cluster] {
+			break
+		}
+		seen[cluster] = true
+
+		off := p.offsetDeCluster(cluster)
+		if off < 0 || off >= l.size {
+			break
+		}
+
+		sz := p.clusterSize
+		if off+sz > l.size {
+			sz = l.size - off
+		}
+		if total+sz > limit {
+			sz = limit - total
+		}
+		if sz <= 0 {
+			break
+		}
+
+		exts = append(exts, Extent{Offset: off, Size: sz})
+		total += sz
+
+		next, ok := fat.next(cluster)
+		if !ok {
+			break
+		}
+		cluster = next
+	}
+	return exts
 }
 
 // readExfatChain concatena los clusters de un directorio.

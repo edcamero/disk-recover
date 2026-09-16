@@ -1,7 +1,7 @@
 BINARY := bin/recover
 PKGS   := ./...
 
-.PHONY: all build test vet fmt race cover fuzz lint check clean
+.PHONY: all build test vet fmt race cover fuzz bench lint check clean
 
 all: check build
 
@@ -47,3 +47,8 @@ check: fmt vet test
 
 clean:
 	rm -rf bin coverage.out
+
+# Comparativa de rendimiento. Los numeros de referencia estan documentados en
+# internal/carver/carver.go, junto a la decision de NO implementar Aho-Corasick.
+bench:
+	go test ./internal/carver/ -run=XXX -bench=. -benchtime=3x -count=5

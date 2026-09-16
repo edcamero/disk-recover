@@ -210,6 +210,8 @@ func (l *Lister) parseNTFSRecord(record []byte, p *ntfsParams) *FileEntry {
 		dataOff    int64
 		contiguous bool
 		haveData   bool
+		inlineData []byte
+		dataAttr   []byte // non-nil cuando hay un $DATA no residente fragmentado
 	)
 
 	for i := 0; i < maxAttrsPerRecord && offset+8 <= usedSize; i++ {
@@ -242,6 +244,11 @@ func (l *Lister) parseNTFSRecord(record []byte, p *ntfsParams) *FileEntry {
 			if attr[9] == 0 {
 				if size, off, contig, ok := parseDataAttr(attr, p); ok {
 					dataSize, dataOff, contiguous, haveData = size, off, contig, true
+					if off == 0 && size > 0 {
+						inlineData = residentContent(attr)
+					} else if !contig {
+						dataAttr = attr // para leer la run list completa después
+					}
 				}
 			}
 		}
@@ -253,15 +260,17 @@ func (l *Lister) parseNTFSRecord(record []byte, p *ntfsParams) *FileEntry {
 		return nil
 	}
 
-	// Recoverable solo si sabemos de verdad dónde están los datos y son
-	// contiguos, que es lo que un FileEntry con un único Offset puede
-	// representar. Marcarlo a la ligera hacía que se extrajera el sector de
-	// arranque como contenido de cada archivo.
-	recoverable := !isDir &&
-		dataSize > 0 &&
-		dataOff > 0 &&
-		contiguous &&
-		dataOff+dataSize <= l.size
+	// Fragmentado: recorrer la run list completa para obtener todos los extents.
+	var dataExtents []Extent
+	if !contiguous && dataOff > 0 && dataAttr != nil {
+		dataExtents = ntfsRunListExtents(dataAttr, p, l.size)
+	}
+
+	// Recoverable si los datos son contiguos, residentes, o fragmentados con extents válidos.
+	recoverable := !isDir && dataSize > 0 && (
+		inlineData != nil ||
+		(dataOff > 0 && contiguous && dataOff+dataSize <= l.size) ||
+		len(dataExtents) > 0)
 
 	return &FileEntry{
 		Name:        name,
@@ -271,6 +280,8 @@ func (l *Lister) parseNTFSRecord(record []byte, p *ntfsParams) *FileEntry {
 		IsDir:       isDir,
 		IsDeleted:   isDeleted,
 		Recoverable: recoverable,
+		Data:        inlineData,
+		Extents:     dataExtents,
 	}
 }
 
@@ -304,11 +315,27 @@ func parseFileNameAttr(attr []byte) (string, byte, bool) {
 	return string(utf16.Decode(units)), nameSpace, true
 }
 
+// residentContent devuelve una copia de los bytes del atributo residente.
+// Devuelve nil si el atributo está malformado.
+func residentContent(attr []byte) []byte {
+	if len(attr) < 22 || attr[8] != 0 {
+		return nil
+	}
+	vLen := int(binary.LittleEndian.Uint32(attr[16:20]))
+	vOff := int(binary.LittleEndian.Uint16(attr[20:22]))
+	if vLen <= 0 || vOff < 16 || vOff+vLen > len(attr) {
+		return nil
+	}
+	out := make([]byte, vLen)
+	copy(out, attr[vOff:vOff+vLen])
+	return out
+}
+
 // parseDataAttr localiza el contenido del archivo.
 //
 // Devuelve tamaño, offset absoluto en el volumen y si los datos son contiguos.
 // Para los archivos pequeños NTFS guarda el contenido dentro del propio registro
-// de la MFT (residente); ahí no hay offset en el volumen que devolver.
+// de la MFT (residente); ahí offset=0 y el llamante obtiene los bytes con residentContent.
 func parseDataAttr(attr []byte, p *ntfsParams) (size, offset int64, contiguous, ok bool) {
 	if len(attr) < 16 {
 		return 0, 0, false, false
@@ -385,6 +412,72 @@ func parseRunList(data []byte) (firstLCN int64, runs int, ok bool) {
 	}
 
 	return firstLCN, runs, runs > 0
+}
+
+// ntfsRunListExtents convierte todos los fragmentos de una run list NTFS en
+// extents de disco. Los huecos dispersos (sparse, offSize == 0) se omiten
+// porque no tienen datos físicos en el volumen.
+func ntfsRunListExtents(attr []byte, p *ntfsParams, volumeSize int64) []Extent {
+	if len(attr) < 0x42 || attr[8] == 0 {
+		return nil
+	}
+	runOff := int(binary.LittleEndian.Uint16(attr[0x20:0x22]))
+	if runOff < 0x40 || runOff >= len(attr) {
+		return nil
+	}
+	data := attr[runOff:]
+
+	var exts []Extent
+	var currentLCN int64
+	pos := 0
+
+	for pos < len(data) && len(exts) < 1024 {
+		header := data[pos]
+		if header == 0x00 {
+			break
+		}
+		pos++
+
+		lenSize := int(header & 0x0F)
+		offSize := int(header >> 4)
+		if lenSize == 0 || lenSize > 8 || offSize > 8 {
+			break
+		}
+		if pos+lenSize+offSize > len(data) {
+			break
+		}
+
+		// Número de clusters del fragmento (sin signo, little-endian).
+		var runLen int64
+		for i := lenSize - 1; i >= 0; i-- {
+			runLen = runLen<<8 | int64(data[pos+i])
+		}
+		pos += lenSize
+
+		// Desplazamiento del LCN (con signo, relativo al anterior).
+		if offSize > 0 {
+			currentLCN += signedLE(data[pos : pos+offSize])
+			pos += offSize
+		}
+
+		if offSize == 0 || currentLCN <= 0 || runLen <= 0 {
+			continue // hueco disperso o entrada inválida
+		}
+
+		diskOff := currentLCN * p.clusterSize
+		diskSize := runLen * p.clusterSize
+
+		if diskOff <= 0 || diskOff >= volumeSize {
+			continue
+		}
+		if diskOff+diskSize > volumeSize {
+			diskSize = volumeSize - diskOff
+		}
+
+		exts = append(exts, Extent{Offset: diskOff, Size: diskSize})
+	}
+
+	return exts
 }
 
 // signedLE interpreta hasta 8 bytes little-endian como entero con signo,

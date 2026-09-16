@@ -6,16 +6,24 @@ import (
 	"time"
 )
 
+// Extent es un fragmento contiguo de datos en disco.
+type Extent struct {
+	Offset int64
+	Size   int64
+}
+
 // FileEntry representa un archivo encontrado recorriendo el FS
 type FileEntry struct {
 	Name        string
 	Path        string // ruta relativa desde la raíz del FS
-	Offset      int64  // offset en disco donde están los datos
+	Offset      int64  // offset en disco donde están los datos (primer fragmento)
 	Size        int64
 	IsDir       bool
 	ModTime     time.Time
-	IsDeleted   bool // true si estaba en espacio "liberado"
-	Recoverable bool // true si los clusters son contiguos
+	IsDeleted   bool     // true si estaba en espacio "liberado"
+	Recoverable bool     // true si los datos son accesibles
+	Data        []byte   // non-nil en NTFS residentes: el contenido está aquí, no en disco
+	Extents     []Extent // non-nil en exFAT fragmentado: los clusters en orden
 
 	// firstCluster es interno: lo usa el recorrido de directorios para bajar a
 	// los subdirectorios sin recalcularlo desde el offset.

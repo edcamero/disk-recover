@@ -75,6 +75,10 @@ Existen [PhotoRec](https://www.cgsecurity.org/testdisk.html), [Foremost](https:/
 | `internal/scanner` | Lectura por bloques con overlap y cancelación | No sabe qué es un JPEG |
 | `internal/signatures` | Registro de firmas, carga desde `.sig` | No escanea |
 | `internal/carver` | Orquesta scanner + signatures | No clasifica |
+| `internal/validate` | Comprueba que el contenido es coherente | No decide si es del usuario |
+| `internal/manifest` | Registro JSONL de lo recuperado | No decide qué se recupera |
+| `internal/blockdev` | Acceso a dispositivos en crudo, alineación, tamaño | No interpreta el contenido |
+| `internal/pipeline` | Orquesta el flujo completo | No parsea flags ni imprime |
 | `internal/classifier` | Decide si un archivo es "usuario" o "sistema" | No lee EXIF directamente (usa helpers) |
 | `internal/namerecovery` | Intenta recuperar nombres originales | No garantiza 100% |
 | `internal/filesystem` | Modo `list`: lee FS parcialmente legible | No hace carving |
@@ -107,12 +111,12 @@ Existen [PhotoRec](https://www.cgsecurity.org/testdisk.html), [Foremost](https:/
 | Modo `list` sobre **FAT32**, con nombres largos (LFN) | ✅ |
 | **Archivos borrados en FAT**: se recupera el nombre largo completo | ✅ |
 | Modo `list` sobre **exFAT**: nombres UTF-16, borrados, `NoFatChain` | ✅ |
-| Modo `list` sobre NTFS: nombre, tamaño y data runs contiguos | ⚠️ Parcial |
-| Archivos NTFS fragmentados (varios data runs) | ❌ Se detectan pero no se extraen |
-| Archivos NTFS residentes (contenido dentro de la MFT) | ❌ Pendiente |
-| Archivos exFAT sin `NoFatChain` (fragmentados) | ❌ Se detectan pero no se extraen |
+| Modo `list` sobre NTFS: nombre, tamaño, residentes y fragmentados | ✅ |
+| Archivos NTFS fragmentados (varios data runs) | ✅ Run list completa, extents en orden |
+| Archivos NTFS residentes (contenido dentro de la MFT) | ✅ |
+| Archivos exFAT sin `NoFatChain` (fragmentados) | ✅ Cadena FAT con extents |
 | FAT12/FAT16 | ❌ Se detecta y se rechaza explícitamente; usa `-mode=carve` |
-| ext4 | ❌ Solo detección |
+| ext4 | ✅ Árbol de extents + barrido de inodos borrados con detección de tipo |
 
 Lo marcado como pendiente se rechaza de forma explícita en lugar de producir
 resultados silenciosamente incorrectos: en una herramienta de recuperación,
@@ -137,6 +141,27 @@ error. Por eso hace falta también la heurística de rachas, cuyo umbral se midi
 sobre JPEG reales: el techo es 129 sin importar tamaño ni contenido.
 
 PNG usa el CRC32 de cada chunk, que es determinista y no necesita descomprimir.
+
+### Sobre el rendimiento
+
+Medido en un Ryzen 5 7535HS, con 5 repeticiones y ±1,2 % de varianza:
+
+| Escenario | Velocidad |
+|---|---|
+| 11 firmas (las de serie) sobre ruido | **810 MB/s** |
+| 1 sola firma | 4 280 MB/s |
+| Disco de ceros, 11 firmas | 3 300 MB/s |
+| Memoria durante el escaneo | **1,9–5,3 MB, constante** |
+
+El escaneo recorre cada bloque una vez por firma, lo que cuesta un factor 5,3×
+frente a usar una sola. **No se ha optimizado a propósito**: 810 MB/s ya supera
+el ancho de banda del hardware del que se recupera —USB 3.0 real ronda los
+350 MB/s, SATA III los 550 y un HDD los 150— así que el cuello de botella es el
+dispositivo, no el código. Solo escaneando una imagen alojada en NVMe mandaría
+la CPU.
+
+El razonamiento completo, con los números, está junto al bucle en
+`internal/carver/carver.go`. `make bench` reproduce las mediciones.
 
 ---
 
@@ -356,14 +381,17 @@ header: ?? ?? ?? ?? 66 74 79 70
 - [x] Lectura eficiente con ventana deslizante (overlap configurable)
 - [x] Clasificación por EXIF + tamaño + resolución
 - [x] Recuperación de nombres vía EXIF/XMP/string scanning
-- [x] Modo `list` para FAT32 y NTFS (parcial)
+- [x] Modo `list` para FAT32, exFAT, NTFS y ext4
+- [x] NTFS: archivos residentes, contiguos y fragmentados (run list completa)
+- [x] exFAT: archivos fragmentados via cadena FAT (extents)
+- [x] ext4: árbol de extents (profundidad arbitraria)
 - [x] Escritura atómica con SHA256 integrado
 - [x] Cancelación graceful con `Ctrl+C`
 - [x] Protección contra sobrescribir el disco origen
 
 ### 🚧 En progreso
 
-- [ ] Parser ext4 completo
+- [x] ext4: recuperación de inodos borrados via barrido de bitmaps
 - [ ] Reconstrucción de estructura de directorios
 - [ ] Soporte para RAW de cámaras (CR3, NEF, ARW, DNG)
 - [ ] Interfaz TUI con barra de progreso

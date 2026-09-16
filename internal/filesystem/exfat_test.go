@@ -252,11 +252,12 @@ func TestExfatNombreLargoUnicode(t *testing.T) {
 	}
 }
 
-// TestExfatNoFatChainDecideRecoverable: sin el bit de contiguidad no se puede
-// afirmar donde estan los datos con un unico Offset, asi que no debe marcarse
-// recuperable. Marcarlo produciria archivos con contenido de otro sitio.
-func TestExfatNoFatChainDecideRecoverable(t *testing.T) {
+// TestExfatFragmentadoUnCluster: sin NoFatChain, se sigue la FAT. Con una
+// cadena de un solo cluster se recupera el archivo parcialmente.
+func TestExfatFragmentadoUnCluster(t *testing.T) {
 	img := newExfatImage(16)
+	// FAT[3] = 0xFFFFFFFF (fin de cadena): el archivo declara 8192 bytes
+	// pero la cadena termina en el primer cluster (4096 bytes).
 	img.writeAt(2, exfatFileSet("fragmentado.jpg", 3, 8192, false, false, false))
 
 	l := NewLister(bytes.NewReader(img.data), img.size())
@@ -267,8 +268,42 @@ func TestExfatNoFatChainDecideRecoverable(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("%d entradas, se esperaba 1", len(entries))
 	}
-	if entries[0].Recoverable {
-		t.Error("Recoverable = true sin NoFatChain: se extraerian datos ajenos")
+	if !entries[0].Recoverable {
+		t.Error("Recoverable = false: la FAT encontró el cluster del archivo")
+	}
+	if len(entries[0].Extents) != 1 {
+		t.Errorf("Extents = %d, se esperaba 1 (un solo cluster en la FAT)", len(entries[0].Extents))
+	}
+}
+
+// TestExfatFragmentadoCadenaCompleta: cadena FAT de dos clusters cubre los
+// 8192 bytes declarados y produce dos extents.
+func TestExfatFragmentadoCadenaCompleta(t *testing.T) {
+	img := newExfatImage(16)
+	// Cadena: cluster 3 → cluster 4 → fin
+	binary.LittleEndian.PutUint32(img.data[img.fatOffset+3*4:], 4)
+
+	img.writeAt(2, exfatFileSet("fragmentado.jpg", 3, 8192, false, false, false))
+
+	l := NewLister(bytes.NewReader(img.data), img.size())
+	entries, _ := l.listExfat()
+
+	if len(entries) != 1 {
+		t.Fatalf("%d entradas, se esperaba 1", len(entries))
+	}
+	if !entries[0].Recoverable {
+		t.Error("Recoverable = false con cadena FAT de 2 clusters")
+	}
+	if len(entries[0].Extents) != 2 {
+		t.Errorf("Extents = %d, se esperaban 2 (clusters 3 y 4)", len(entries[0].Extents))
+	}
+	// Los dos extents deben sumar exactamente el tamaño declarado.
+	var total int64
+	for _, e := range entries[0].Extents {
+		total += e.Size
+	}
+	if total != 8192 {
+		t.Errorf("total de extents = %d, se esperaban 8192", total)
 	}
 }
 
@@ -406,16 +441,28 @@ func FuzzParseExfatFileSet(f *testing.F) {
 		bytesPerSector: 512, sectorsPerCluster: 8, clusterSize: 4096,
 		clusterHeapOffset: 65536, rootCluster: 2,
 	}
+	// FAT vacía: devuelve (0, false) para cualquier cluster. Los archivos sin
+	// NoFatChain tendrán extents vacíos y no serán recuperables, que es correcto.
+	fat := newFATTable(bytes.NewReader([]byte{}), 0, 0)
 	l := &Lister{size: 1 << 30}
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		fe, n := l.parseExfatFileSet(data, p, false) // no debe hacer panic
+		fe, n := l.parseExfatFileSet(data, p, fat, false) // no debe hacer panic
 		if n < 0 {
 			t.Fatalf("consumidos negativo: %d", n)
 		}
 		if fe != nil && fe.Recoverable {
-			if fe.Offset <= 0 || fe.Size <= 0 || fe.Offset+fe.Size > l.size {
-				t.Fatalf("recuperable incoherente: offset=%d size=%d", fe.Offset, fe.Size)
+			if fe.Extents != nil {
+				// Fragmentado: cada extent debe caer dentro del volumen.
+				for _, ext := range fe.Extents {
+					if ext.Offset <= 0 || ext.Size <= 0 || ext.Offset+ext.Size > l.size {
+						t.Fatalf("extent fuera del volumen: offset=%d size=%d", ext.Offset, ext.Size)
+					}
+				}
+			} else {
+				if fe.Offset <= 0 || fe.Size <= 0 || fe.Offset+fe.Size > l.size {
+					t.Fatalf("recuperable incoherente: offset=%d size=%d", fe.Offset, fe.Size)
+				}
 			}
 		}
 	})
