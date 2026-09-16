@@ -409,7 +409,7 @@ func buildFragmentedMFTRecord(t *testing.T, name string, lcn1, runLen1, lcn2, ru
 	dataAttr := make([]byte, dataAttrLen)
 	binary.LittleEndian.PutUint32(dataAttr[0:4], attrData)
 	binary.LittleEndian.PutUint32(dataAttr[4:8], uint32(dataAttrLen))
-	dataAttr[8] = 1 // no residente
+	dataAttr[8] = 1                                          // no residente
 	binary.LittleEndian.PutUint16(dataAttr[0x20:0x22], 0x40) // mapping pairs offset
 	binary.LittleEndian.PutUint64(dataAttr[0x30:0x38], uint64(realSize))
 	copy(dataAttr[0x40:], runList)

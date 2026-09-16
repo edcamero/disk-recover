@@ -20,9 +20,9 @@ import (
 func buildMinimalExt4(t *testing.T, filename string, content []byte) []byte {
 	t.Helper()
 	const (
-		blockSize      = 4096
-		inodeSize      = 256
-		inodesPerGroup = 256
+		blockSize       = 4096
+		inodeSize       = 256
+		inodesPerGroup  = 256
 		inodeTableBlock = 4
 		dirBlock        = 5
 		fileBlock       = 6
@@ -33,15 +33,15 @@ func buildMinimalExt4(t *testing.T, filename string, content []byte) []byte {
 
 	// ── Superbloque (offset 1024 desde el inicio del disco) ──────────────────
 	sb := disk[1024 : 1024+1024]
-	binary.LittleEndian.PutUint32(sb[0x00:], 512)                          // s_inodes_count
-	binary.LittleEndian.PutUint32(sb[0x04:], uint32(totalBlocks))          // s_blocks_count_lo
-	binary.LittleEndian.PutUint32(sb[0x14:], 0)                            // s_first_data_block (0 para bs>1024)
-	binary.LittleEndian.PutUint32(sb[0x18:], 2)                            // s_log_block_size (1024<<2=4096)
-	binary.LittleEndian.PutUint32(sb[0x20:], 32768)                        // s_blocks_per_group
-	binary.LittleEndian.PutUint32(sb[0x28:], inodesPerGroup)               // s_inodes_per_group
-	binary.LittleEndian.PutUint16(sb[0x38:], ext4Magic)                    // s_magic
-	binary.LittleEndian.PutUint32(sb[0x54:], 11)                           // s_first_ino
-	binary.LittleEndian.PutUint16(sb[0x58:], inodeSize)                    // s_inode_size
+	binary.LittleEndian.PutUint32(sb[0x00:], 512)                 // s_inodes_count
+	binary.LittleEndian.PutUint32(sb[0x04:], uint32(totalBlocks)) // s_blocks_count_lo
+	binary.LittleEndian.PutUint32(sb[0x14:], 0)                   // s_first_data_block (0 para bs>1024)
+	binary.LittleEndian.PutUint32(sb[0x18:], 2)                   // s_log_block_size (1024<<2=4096)
+	binary.LittleEndian.PutUint32(sb[0x20:], 32768)               // s_blocks_per_group
+	binary.LittleEndian.PutUint32(sb[0x28:], inodesPerGroup)      // s_inodes_per_group
+	binary.LittleEndian.PutUint16(sb[0x38:], ext4Magic)           // s_magic
+	binary.LittleEndian.PutUint32(sb[0x54:], 11)                  // s_first_ino
+	binary.LittleEndian.PutUint16(sb[0x58:], inodeSize)           // s_inode_size
 	// s_feature_incompat = 0: no 64-bit mode → bgdEntrySize = 32
 	// s_feature_incompat |= EXT4_FEATURE_INCOMPAT_EXTENTS (0x40) para marcar extents
 	binary.LittleEndian.PutUint32(sb[0x60:], 0x40) // s_feature_incompat: extents
@@ -55,9 +55,9 @@ func buildMinimalExt4(t *testing.T, filename string, content []byte) []byte {
 	// local = (2-1) % 256 = 1 → offset = inodeTableBlock*4096 + 1*256
 	rootInodeOff := inodeTableBlock*blockSize + 1*inodeSize
 	ri := disk[rootInodeOff : rootInodeOff+inodeSize]
-	binary.LittleEndian.PutUint16(ri[0x00:], 0x41ED) // i_mode: dir + rwxr-xr-x
-	binary.LittleEndian.PutUint32(ri[0x04:], blockSize) // i_size_lo
-	binary.LittleEndian.PutUint16(ri[0x1A:], 2)          // i_links_count
+	binary.LittleEndian.PutUint16(ri[0x00:], 0x41ED)                // i_mode: dir + rwxr-xr-x
+	binary.LittleEndian.PutUint32(ri[0x04:], blockSize)             // i_size_lo
+	binary.LittleEndian.PutUint16(ri[0x1A:], 2)                     // i_links_count
 	binary.LittleEndian.PutUint32(ri[0x20:], uint32(ext4ExtentsFL)) // i_flags
 	// Árbol de extents inline en i_block (offset 0x28):
 	extHdr := ri[0x28:]
@@ -67,15 +67,15 @@ func buildMinimalExt4(t *testing.T, filename string, content []byte) []byte {
 	binary.LittleEndian.PutUint16(extHdr[0x06:], 0)                        // eh_depth (leaf)
 	// Leaf extent (12 bytes) en offset 12 del header:
 	leaf := extHdr[12:]
-	binary.LittleEndian.PutUint32(leaf[0x00:], 0)         // ee_block (VCN 0)
-	binary.LittleEndian.PutUint16(leaf[0x04:], 1)         // ee_len (1 bloque)
-	binary.LittleEndian.PutUint16(leaf[0x06:], 0)         // ee_start_hi
-	binary.LittleEndian.PutUint32(leaf[0x08:], dirBlock)  // ee_start_lo
+	binary.LittleEndian.PutUint32(leaf[0x00:], 0)        // ee_block (VCN 0)
+	binary.LittleEndian.PutUint16(leaf[0x04:], 1)        // ee_len (1 bloque)
+	binary.LittleEndian.PutUint16(leaf[0x06:], 0)        // ee_start_hi
+	binary.LittleEndian.PutUint32(leaf[0x08:], dirBlock) // ee_start_lo
 
 	// ── Inodo de archivo (fileIno = 12): local = 11 ───────────────────────────
 	fileInodeOff := inodeTableBlock*blockSize + 11*inodeSize
 	fi := disk[fileInodeOff : fileInodeOff+inodeSize]
-	binary.LittleEndian.PutUint16(fi[0x00:], 0x81A4) // i_mode: regular + rw-r--r--
+	binary.LittleEndian.PutUint16(fi[0x00:], 0x81A4)               // i_mode: regular + rw-r--r--
 	binary.LittleEndian.PutUint32(fi[0x04:], uint32(len(content))) // i_size_lo
 	binary.LittleEndian.PutUint32(fi[0x10:], 1700000000)           // i_mtime
 	binary.LittleEndian.PutUint16(fi[0x1A:], 1)                    // i_links_count
@@ -199,10 +199,10 @@ func TestExt4DeletedInodeRecovery(t *testing.T) {
 	// Inodo 12 (local 11): archivo regular borrado con JPEG magic en bloque 6
 	// inodeOff = 4*4096 + 11*256 = 16384 + 2816 = 19200
 	fi := disk[19200 : 19200+inodeSize]
-	binary.LittleEndian.PutUint16(fi[0x00:], 0x81A4)            // regular file
-	binary.LittleEndian.PutUint32(fi[0x04:], 500)               // i_size_lo = 500
-	binary.LittleEndian.PutUint32(fi[0x10:], 1700000000)        // i_mtime
-	binary.LittleEndian.PutUint32(fi[0x14:], 1700001000)        // i_dtime ← borrado
+	binary.LittleEndian.PutUint16(fi[0x00:], 0x81A4)     // regular file
+	binary.LittleEndian.PutUint32(fi[0x04:], 500)        // i_size_lo = 500
+	binary.LittleEndian.PutUint32(fi[0x10:], 1700000000) // i_mtime
+	binary.LittleEndian.PutUint32(fi[0x14:], 1700001000) // i_dtime ← borrado
 	binary.LittleEndian.PutUint32(fi[0x20:], uint32(ext4ExtentsFL))
 	fHdr := fi[0x28:]
 	binary.LittleEndian.PutUint16(fHdr[0x00:], uint16(ext4ExtentsMagic))
