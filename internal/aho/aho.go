@@ -36,8 +36,8 @@ type node struct {
 type Automaton struct {
 	root     *node
 	sigs     []signatures.Signature
-	patterns [][]byte   // patrones ancla para cada firma
-	anchors  []int      // offset del ancla dentro del patrón completo
+	patterns [][]byte // patrones ancla para cada firma
+	anchors  []int    // offset del ancla dentro del patrón completo
 }
 
 // NewAutomaton construye un autómata para múltiples firmas.

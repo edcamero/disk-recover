@@ -133,7 +133,7 @@ func BenchmarkSequentialSearch(b *testing.B) {
 		data[i] = byte(i % 256)
 	}
 	// Insertar algunas coincidencias
-	copy(data[100:], []byte{0xFF, 0xD8, 0xFF}) // JPEG
+	copy(data[100:], []byte{0xFF, 0xD8, 0xFF})          // JPEG
 	copy(data[500000:], []byte{0x89, 0x50, 0x4E, 0x47}) // PNG
 
 	b.ResetTimer()
@@ -164,7 +164,7 @@ func BenchmarkAhoCorasick(b *testing.B) {
 		data[i] = byte(i % 256)
 	}
 	// Insertar algunas coincidencias
-	copy(data[100:], []byte{0xFF, 0xD8, 0xFF}) // JPEG
+	copy(data[100:], []byte{0xFF, 0xD8, 0xFF})          // JPEG
 	copy(data[500000:], []byte{0x89, 0x50, 0x4E, 0x47}) // PNG
 
 	b.ResetTimer()
