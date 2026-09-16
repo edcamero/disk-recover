@@ -39,10 +39,10 @@ type ext4Params struct {
 	blockSize      int64
 	inodeSize      int64
 	inodesPerGroup int64
-	groupCount     int64 // número de grupos de bloques
+	groupCount     int64  // número de grupos de bloques
 	firstIno       uint32 // primer inodo no reservado (s_first_ino, típicamente 11)
-	bgdtOff        int64 // offset en disco de la tabla de descriptores de grupo
-	bgdEntrySize   int64 // bytes por descriptor (32 ó 64 en modo 64-bit)
+	bgdtOff        int64  // offset en disco de la tabla de descriptores de grupo
+	bgdEntrySize   int64  // bytes por descriptor (32 ó 64 en modo 64-bit)
 }
 
 // parseExt4Super lee y valida el superbloque.
@@ -243,7 +243,7 @@ func (l *Lister) listExt4() ([]FileEntry, error) {
 // maxEntries acota la salida si el disco tiene millones de archivos borrados.
 func (l *Lister) ext4ScanDeletedInodes(p *ext4Params, entries *[]FileEntry) {
 	inode := make([]byte, p.inodeSize) // reutilizado para cada inodo
-	ibmap := make([]byte, p.blockSize)  // reutilizado para cada grupo
+	ibmap := make([]byte, p.blockSize) // reutilizado para cada grupo
 
 	for g := int64(0); g < p.groupCount && len(*entries) < maxEntries; g++ {
 		bgd := make([]byte, p.bgdEntrySize)

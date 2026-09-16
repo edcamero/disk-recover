@@ -267,8 +267,7 @@ func (l *Lister) parseNTFSRecord(record []byte, p *ntfsParams) *FileEntry {
 	}
 
 	// Recoverable si los datos son contiguos, residentes, o fragmentados con extents válidos.
-	recoverable := !isDir && dataSize > 0 && (
-		inlineData != nil ||
+	recoverable := !isDir && dataSize > 0 && (inlineData != nil ||
 		(dataOff > 0 && contiguous && dataOff+dataSize <= l.size) ||
 		len(dataExtents) > 0)
 
