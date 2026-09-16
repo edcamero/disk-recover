@@ -122,6 +122,15 @@ func (m Magic) Len() int {
 	return len(m.bytes)
 }
 
+// Mask devuelve una copia de la máscara de wildcards.
+// 0xFF indica byte fijo, 0x00 indica wildcard (cualquier byte vale).
+// Expuesto para permitir optimizaciones como Aho-Corasick.
+func (m Magic) Mask() []byte {
+	out := make([]byte, len(m.mask))
+	copy(out, m.mask)
+	return out
+}
+
 // Offset devuelve el offset donde debe aparecer
 func (m Magic) Offset() int {
 	return m.offset

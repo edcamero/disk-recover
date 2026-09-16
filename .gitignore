@@ -1,0 +1,1 @@
+Nothing should be ignored since the changes only include Go source files (.go) and test files (.go), which are not build artifacts, dependencies, or temporary files.
